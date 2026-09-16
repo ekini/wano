@@ -44,7 +44,7 @@ pub fn run(path: PathBuf) -> Result<()> {
     let watched_file = path.clone();
     let mut watcher = notify::recommended_watcher(move |event: notify::Result<notify::Event>| match event {
         Ok(event) => {
-            if event.paths.iter().any(|p| p == &watched_file) {
+            if wrote(&event) && event.paths.iter().any(|p| p == &watched_file) {
                 let _ = watch_tx.send(Wake::Reload);
             }
         }
@@ -135,6 +135,12 @@ pub fn run(path: PathBuf) -> Result<()> {
     Ok(())
 }
 
+/// Whether a watch event is a write. Reads must not count: inotify reports the
+/// open that reloading does, which would feed the reload that caused it.
+fn wrote(event: &notify::Event) -> bool {
+    event.kind.is_modify() || event.kind.is_create() || event.kind.is_remove()
+}
+
 /// Apply the best-matching profile, but only when the set of connected outputs
 /// differs from the last one acted on. Layout changes that leave the set intact —
 /// the arranger applying a drag, or a manual `swaymsg output` — are left alone.
@@ -178,4 +184,23 @@ fn apply_matching(
     }
     // Either way, don't reconsider this output set until it changes again.
     *applied = Some(current);
+}
+
+#[cfg(test)]
+mod tests {
+    use notify::event::{AccessKind, AccessMode, CreateKind, DataChange, EventKind, ModifyKind, RenameMode};
+
+    use super::wrote;
+
+    fn event(kind: EventKind) -> notify::Event {
+        notify::Event::new(kind)
+    }
+
+    #[test]
+    fn only_writes_trigger_a_reload() {
+        assert!(!wrote(&event(EventKind::Access(AccessKind::Open(AccessMode::Any)))));
+        assert!(wrote(&event(EventKind::Modify(ModifyKind::Data(DataChange::Any)))));
+        assert!(wrote(&event(EventKind::Modify(ModifyKind::Name(RenameMode::To)))));
+        assert!(wrote(&event(EventKind::Create(CreateKind::File))));
+    }
 }
