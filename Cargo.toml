@@ -13,6 +13,29 @@ path = "src/main.rs"
 name = "wano-ui"
 path = "src/bin/wano-ui.rs"
 
+# Hand-written depends: wayland, xkbcommon and EGL are dlopened, so nothing
+# appears in the binaries' link-time dependencies for dpkg-shlibdeps to find.
+[package.metadata.deb]
+maintainer = "Eugene Dementyev <e@dementyev.me>"
+section = "x11"
+license-file = ["LICENSE", "0"]
+copyright = "2026 Eugene Dementyev"
+priority = "optional"
+depends = "libc6 (>= 2.39), libgcc-s1, libwayland-client0, libwayland-egl1, libxkbcommon0, libegl1"
+recommends = "sway"
+extended-description = """\
+wano remembers monitor arrangements — position, scale, mode and transform — \
+reapplies the matching profile when monitors come and go, and ships a GUI for \
+dragging monitors into place. For wlroots compositors via \
+wlr-output-management-unstable-v1."""
+assets = [
+    ["target/release/wano", "usr/bin/", "755"],
+    ["target/release/wano-ui", "usr/bin/", "755"],
+    ["packaging/wano-ui.desktop", "usr/share/applications/", "644"],
+    ["packaging/wano.service", "usr/lib/systemd/user/", "644"],
+    ["README.md", "usr/share/doc/wano/README.md", "644"],
+]
+
 [dependencies]
 anyhow = "1.0.104"
 calloop = "0.14.4"

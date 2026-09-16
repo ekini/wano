@@ -16,11 +16,44 @@ wano-ui                # arrange the monitors visually
 
 Profiles live in `~/.config/wano/config.toml` (or `$XDG_CONFIG_HOME/wano`).
 
-## Build
+## Install
 
 ```
 cargo install --path .
 ```
+
+### Packages
+
+`packaging/build.sh deb` and `packaging/build.sh snap` build in containers —
+this machine's glibc is likely newer than the target's — and drop the artifacts
+in `dist/`. The .deb is built on Ubuntu 24.04, so it installs on 24.04 and
+anything newer.
+
+```
+sudo apt install ./dist/wano_0.1.0-1_amd64.deb
+```
+
+It ships both binaries, the desktop entry and a systemd user unit. The unit
+needs `WAYLAND_DISPLAY`, which sway does not hand to the user manager, so the
+sway config line is
+
+```
+exec systemctl --user import-environment WAYLAND_DISPLAY && systemctl --user start wano
+```
+
+`exec wano daemon` stays the simpler option and needs no unit at all.
+
+The snap is strictly confined, and snapd points `HOME` at
+`~/snap/wano/current`, so reaching the real profiles needs one connection that
+never happens automatically:
+
+```
+sudo snap install --dangerous ./dist/wano_0.1.0_amd64.snap
+sudo snap connect wano:dot-config-wano
+```
+
+(`confinement: classic` in `snap/snapcraft.yaml` drops that step, at the price
+of classic review.)
 
 ## Profiles
 

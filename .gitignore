@@ -1,1 +1,8 @@
 /target
+/dist
+# snapcraft's work trees
+/parts
+/stage
+/prime
+/overlay
+/.craft

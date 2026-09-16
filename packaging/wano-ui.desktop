@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=wano
+GenericName=Monitor Arranger
+Comment=Arrange monitors, set scale and save the layout as a profile
+Exec=wano-ui
+Icon=preferences-desktop-display
+Categories=Settings;HardwareSettings;
+Keywords=monitor;display;screen;layout;scale;
+Terminal=false

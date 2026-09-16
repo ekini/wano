@@ -1,0 +1,14 @@
+[Unit]
+Description=wano monitor layout daemon
+Documentation=file:///usr/share/doc/wano/README.md
+PartOf=graphical-session.target
+After=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/wano daemon
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=on-failure
+
+[Install]
+WantedBy=graphical-session.target

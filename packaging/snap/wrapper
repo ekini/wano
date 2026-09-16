@@ -1,0 +1,7 @@
+#!/bin/sh
+# snapd points HOME at ~/snap/wano/current, where the real profiles are not.
+# wano reads XDG_CONFIG_HOME before HOME, so aim it at the actual home.
+bin=$1
+shift
+export XDG_CONFIG_HOME="${SNAP_REAL_HOME:-$HOME}/.config"
+exec "$SNAP/bin/$bin" "$@"

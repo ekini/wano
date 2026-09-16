@@ -1,0 +1,55 @@
+name: wano
+base: core24
+version: "0.1.0"
+summary: Monitor layout daemon and visual arranger for wlroots compositors
+description: |
+  wano remembers monitor arrangements — position, scale, mode and transform —
+  reapplies the matching profile when monitors come and go, and ships a GUI for
+  dragging monitors into place.
+
+  For wlroots compositors (sway, river, …) via
+  wlr-output-management-unstable-v1.
+grade: stable
+confinement: strict
+
+platforms:
+  amd64:
+
+apps:
+  wano:
+    command: bin/wrapper wano
+    plugs: [wayland, dot-config-wano]
+  wano-ui:
+    command: bin/wrapper wano-ui
+    plugs: [wayland, opengl, dot-config-wano]
+    desktop: usr/share/applications/wano-ui.desktop
+    environment:
+      LIBGL_DRIVERS_PATH: $SNAP/usr/lib/x86_64-linux-gnu/dri
+      __EGL_VENDOR_LIBRARY_DIRS: $SNAP/usr/share/glvnd/egl_vendor.d
+      XKB_CONFIG_ROOT: $SNAP/usr/share/X11/xkb
+
+plugs:
+  # snapd redirects HOME, so the real profiles are out of reach without this;
+  # it never auto-connects (see README).
+  dot-config-wano:
+    interface: personal-files
+    write: [$HOME/.config/wano]
+
+parts:
+  wano:
+    plugin: nil
+    override-build: |
+      cd "$CRAFT_PROJECT_DIR"
+      install -Dm755 target/release/wano "$CRAFT_PART_INSTALL/bin/wano"
+      install -Dm755 target/release/wano-ui "$CRAFT_PART_INSTALL/bin/wano-ui"
+      install -Dm755 packaging/snap/wrapper "$CRAFT_PART_INSTALL/bin/wrapper"
+      install -Dm644 packaging/wano-ui.desktop \
+        "$CRAFT_PART_INSTALL/usr/share/applications/wano-ui.desktop"
+    stage-packages:
+      - libwayland-client0
+      - libwayland-egl1
+      - libxkbcommon0
+      - libegl1
+      - libegl-mesa0
+      - libgl1-mesa-dri
+      - xkb-data
