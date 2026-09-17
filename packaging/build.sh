@@ -1,9 +1,12 @@
 #!/bin/sh
-# Builds the release artifacts in containers: this machine's glibc is newer than
-# the target's, so a binary built natively here would not start on Ubuntu.
+# Builds and publishes the release artifacts in containers: this machine's glibc
+# is newer than the target's, so a binary built natively here would not start on
+# Ubuntu, and there is no snapd to build or upload a snap with.
 #
-#   packaging/build.sh deb    -> dist/wano_<version>-1_amd64.deb   (Ubuntu 24.04+)
-#   packaging/build.sh snap   -> dist/wano_<version>_amd64.snap
+#   packaging/build.sh deb              -> dist/wano_<version>-1_amd64.deb  (Ubuntu 24.04+)
+#   packaging/build.sh snap             -> dist/wano_<version>_amd64.snap
+#   packaging/build.sh publish [chan]   uploads that snap, released to edge unless told otherwise
+#   packaging/build.sh store <args>     any other snapcraft command: login, register wano, status wano
 set -eu
 
 RUST=1.90.0
@@ -37,6 +40,22 @@ build() {
         -w /src "$BUILDER" sh -euc "$1"
 }
 
+# The image's entrypoint is snapcraft itself, and it expects the project in
+# /project, so both of these take only the arguments. Store commands need a
+# terminal for the login flow and a home for the credentials it leaves behind;
+# SNAPCRAFT_STORE_CREDENTIALS is honoured too, for a login exported elsewhere.
+pack() {
+    docker run --rm -v "$root:/project" -v wano-target:/project/target "$SNAPCRAFT" \
+        pack --destructive-mode --output dist
+}
+
+store() {
+    mkdir -p "$HOME/.local/share/snapcraft"
+    docker run --rm -it -v "$root:/project" \
+        -v "$HOME/.local/share/snapcraft:/root/.local/share/snapcraft" \
+        -e SNAPCRAFT_STORE_CREDENTIALS "$SNAPCRAFT" "$@"
+}
+
 case ${1:-} in
 deb)
     builder
@@ -45,13 +64,24 @@ deb)
 snap)
     builder
     build 'cargo build --locked --release'
-    # The image's entrypoint is snapcraft itself and it expects the project in
-    # /project, so it takes only the args.
-    docker run --rm -v "$root:/project" -v wano-target:/project/target "$SNAPCRAFT" \
-        pack --destructive-mode --output dist
+    pack
+    ;;
+publish)
+    snap=$(ls -t "$root"/dist/wano_*.snap 2>/dev/null | head -1)
+    test -n "$snap" || {
+        echo "no snap in dist/: run $0 snap first" >&2
+        exit 1
+    }
+    store upload --release="${2:-edge}" "dist/$(basename "$snap")"
+    exit 0
+    ;;
+store)
+    shift
+    store "$@"
+    exit 0
     ;;
 *)
-    echo "usage: $0 deb|snap" >&2
+    sed -n '5,9s/^# \?//p' "$0" >&2
     exit 2
     ;;
 esac

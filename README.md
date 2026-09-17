@@ -55,6 +55,23 @@ sudo snap connect wano:dot-config-wano
 (`confinement: classic` in `snap/snapcraft.yaml` drops that step, at the price
 of classic review.)
 
+### Publishing the snap
+
+```
+packaging/build.sh store login          # once
+packaging/build.sh store register wano  # claims the name
+packaging/build.sh publish [channel]    # uploads the newest dist/ snap, edge by default
+packaging/build.sh store status wano    # where each revision landed
+```
+
+The snap takes its version from `Cargo.toml`, so bumping the crate is enough.
+
+The `personal-files` plug puts every revision through manual review, so the
+first upload is held rather than published: ask for it in the Snapcraft forum's
+*store-requests* category, naming the snap, the interface and the path
+(`$HOME/.config/wano`). Classic confinement is reviewed too, so it is no way
+around this.
+
 ## Profiles
 
 ```toml

@@ -33,6 +33,7 @@ assets = [
     ["target/release/wano-ui", "usr/bin/", "755"],
     ["packaging/wano-ui.desktop", "usr/share/applications/", "644"],
     ["packaging/wano.service", "usr/lib/systemd/user/", "644"],
+    ["packaging/wano.svg", "usr/share/icons/hicolor/scalable/apps/wano.svg", "644"],
     ["README.md", "usr/share/doc/wano/README.md", "644"],
 ]
 

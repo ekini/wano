@@ -1,6 +1,7 @@
 name: wano
 base: core24
-version: "0.1.0"
+adopt-info: wano
+icon: packaging/wano.png
 summary: Monitor layout daemon and visual arranger for wlroots compositors
 description: |
   wano remembers monitor arrangements — position, scale, mode and transform —
@@ -38,6 +39,9 @@ plugs:
 parts:
   wano:
     plugin: nil
+    override-pull: |
+      craftctl set version="$(sed -n '/^\[package\]/,/^\[/s/^version = "\(.*\)"/\1/p' \
+        "$CRAFT_PROJECT_DIR/Cargo.toml")"
     override-build: |
       cd "$CRAFT_PROJECT_DIR"
       install -Dm755 target/release/wano "$CRAFT_PART_INSTALL/bin/wano"
