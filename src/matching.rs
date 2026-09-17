@@ -56,6 +56,10 @@ pub fn best_match<'a>(config: &'a Config, heads: &[Head]) -> Option<Match<'a>> {
     best
 }
 
+pub fn describes(output: &Output, head: &Head) -> bool {
+    score(output, head).is_some()
+}
+
 /// How well one entry describes one head. `None` means it does not apply at all.
 fn score(output: &Output, head: &Head) -> Option<u32> {
     let mut exact = false;

@@ -12,11 +12,11 @@ use clap::Parser;
 use eframe::egui;
 use wayland_client::protocol::wl_output::Transform;
 
-use wano::config::{Config, profile_from_snapshot, suggested_name};
-use wano::matching::best_match;
+use wano::config::{Config, Output, Profile, suggested_name};
+use wano::matching::{best_match, describes, match_profile};
 use wano::wl::{
-    ApplyOutcome, Head, HeadId, Mode, ModeSpec, OutputSetting, OutputState, Snapshot, TRANSFORMS, Wayland,
-    logical_size, quantized_scale, rotated, transform_name,
+    ApplyOutcome, Head, HeadId, ModeSpec, OutputSetting, OutputState, Snapshot, TRANSFORMS, Wayland, logical_size,
+    quantized_scale, rotated, transform_from_name, transform_name,
 };
 
 /// How near an alignment a drop has to land, in screen pixels, for the output to
@@ -128,11 +128,14 @@ fn worker(
 #[derive(Clone)]
 struct Draft {
     id: HeadId,
+    /// The profile entry this came from, when editing a saved profile rather
+    /// than the live outputs: its match keys are kept as they were written.
+    keys: Option<Output>,
     enabled: bool,
     x: f32,
     y: f32,
     scale: f64,
-    mode: Option<Mode>,
+    mode: Option<ModeSpec>,
     transform: Transform,
 }
 
@@ -140,13 +143,77 @@ impl Draft {
     fn from_head(head: &Head) -> Self {
         Self {
             id: head.id.clone(),
+            keys: None,
             enabled: head.enabled,
             x: head.position.0 as f32,
             y: head.position.1 as f32,
             scale: quantized_scale(head.scale),
-            mode: head.current_mode.or_else(|| head.modes.iter().copied().find(|m| m.preferred)),
+            mode: head.current_mode.or_else(|| head.modes.iter().copied().find(|m| m.preferred)).map(ModeSpec::from),
             transform: head.transform,
         }
+    }
+
+    fn from_output(output: &Output) -> Self {
+        let [x, y] = output.position.unwrap_or([0, 0]);
+        let field = |f: &Option<String>| f.clone().unwrap_or_default();
+        Self {
+            id: HeadId {
+                connector: field(&output.connector),
+                make: field(&output.make),
+                model: field(&output.model),
+                serial: field(&output.serial),
+            },
+            keys: Some(output.clone()),
+            enabled: output.enabled,
+            x: x as f32,
+            y: y as f32,
+            scale: output.scale.unwrap_or(1.0),
+            mode: output.mode.as_deref().and_then(|m| m.parse().ok()),
+            transform: output
+                .transform
+                .as_deref()
+                .and_then(|t| transform_from_name(t).ok())
+                .unwrap_or(Transform::Normal),
+        }
+    }
+
+    fn to_output(&self, heads: &[Head], with_serial: bool) -> Output {
+        let keys = match &self.keys {
+            Some(k) => Output { serial: k.serial.clone().filter(|_| with_serial), ..k.clone() },
+            None => heads
+                .iter()
+                .find(|h| h.id == self.id)
+                .map_or_else(Output::default, |h| Output::keys(&h.id, with_serial)),
+        };
+        Output {
+            enabled: self.enabled,
+            position: Some([self.x.round() as i32, self.y.round() as i32]),
+            scale: Some((self.scale * 1000.0).round() / 1000.0),
+            mode: self.mode.map(|m| m.to_string()),
+            transform: Some(transform_name(self.transform).to_string()),
+            ..keys
+        }
+    }
+
+    /// The live head this output stands for, if one is connected.
+    fn head<'a>(&self, heads: &'a [Head]) -> Option<&'a Head> {
+        match &self.keys {
+            Some(k) => heads.iter().find(|h| describes(k, h)),
+            None => heads.iter().find(|h| h.id == self.id),
+        }
+    }
+
+    fn short_name(&self) -> &str {
+        if self.id.connector.is_empty() { &self.id.model } else { &self.id.connector }
+    }
+
+    fn name(&self) -> String {
+        let parts = [&self.id.connector, &self.id.model];
+        parts.into_iter().filter(|s| !s.is_empty()).cloned().collect::<Vec<_>>().join(" — ")
+    }
+
+    fn label(&self) -> String {
+        self.keys.as_ref().map_or_else(|| self.id.to_string(), Output::label)
     }
 
     fn size(&self) -> egui::Vec2 {
@@ -165,7 +232,7 @@ impl Draft {
             enabled: self.enabled,
             position: Some((self.x.round() as i32, self.y.round() as i32)),
             scale: Some(self.scale),
-            mode: self.mode.map(ModeSpec::from),
+            mode: self.mode,
             transform: Some(self.transform),
         }
     }
@@ -188,6 +255,10 @@ struct App {
     name: String,
     with_serial: bool,
     status: String,
+    config: Config,
+    /// Name of the saved profile being edited, when the drafts are not the
+    /// live outputs.
+    editing: Option<String>,
 }
 
 impl App {
@@ -198,9 +269,9 @@ impl App {
         updates: mpsc::Receiver<Update>,
     ) -> Self {
         let drafts: Vec<Draft> = heads.iter().map(Draft::from_head).collect();
-        let name = Config::load(&path)
-            .ok()
-            .and_then(|c| best_match(&c, &heads).map(|m| m.profile.name.clone()))
+        let config = Config::load(&path).unwrap_or_default();
+        let name = best_match(&config, &heads)
+            .map(|m| m.profile.name.clone())
             .unwrap_or_else(|| suggested_name(&Snapshot { serial: 0, heads: heads.clone() }));
         Self {
             path,
@@ -215,7 +286,39 @@ impl App {
             name,
             with_serial: true,
             status: String::new(),
+            config,
+            editing: None,
         }
+    }
+
+    fn reload(&mut self) {
+        self.config = Config::load(&self.path).unwrap_or_default();
+    }
+
+    fn load(&mut self, drafts: Vec<Draft>) {
+        self.base = drafts.clone();
+        self.drafts = drafts;
+        self.slides.clear();
+        self.selected = 0;
+        self.view = None;
+    }
+
+    /// Edit a saved profile in place of the live outputs.
+    fn edit(&mut self, name: &str) {
+        let Some(profile) = self.config.profile(name) else { return };
+        self.name = profile.name.clone();
+        self.with_serial = profile.outputs.iter().any(|o| o.serial.is_some());
+        self.editing = Some(profile.name.clone());
+        self.load(profile.outputs.iter().map(Draft::from_output).collect());
+    }
+
+    fn edit_live(&mut self) {
+        self.editing = None;
+        self.name = best_match(&self.config, &self.heads)
+            .map(|m| m.profile.name.clone())
+            .unwrap_or_else(|| suggested_name(&Snapshot { serial: 0, heads: self.heads.clone() }));
+        self.with_serial = true;
+        self.load(self.heads.iter().map(Draft::from_head).collect());
     }
 
     fn drain(&mut self) {
@@ -224,7 +327,9 @@ impl App {
                 Update::Heads(heads) => {
                     // Keep the edits in progress unless the outputs themselves changed.
                     let same: Vec<&HeadId> = heads.iter().map(|h| &h.id).collect();
-                    if self.drafts.len() != heads.len() || !self.drafts.iter().all(|d| same.contains(&&d.id)) {
+                    if self.editing.is_none()
+                        && (self.drafts.len() != heads.len() || !self.drafts.iter().all(|d| same.contains(&&d.id)))
+                    {
                         self.drafts = heads.iter().map(Draft::from_head).collect();
                         self.base = self.drafts.clone();
                         self.slides.clear();
@@ -240,9 +345,23 @@ impl App {
     }
 
     fn apply(&mut self) {
-        let settings: Vec<OutputSetting> = self.drafts.iter().map(Draft::setting).collect();
-        if self.requests.send(Request::Apply(settings)).is_err() {
-            self.status = "the wayland connection is gone".into();
+        // A saved profile reaches the outputs the same way the daemon applies it:
+        // through its match keys, so it only applies where it fits.
+        let settings: Result<Vec<OutputSetting>> = if self.editing.is_some() {
+            match match_profile(&self.profile(), &self.heads) {
+                Some(m) => m.settings(&self.heads),
+                None => Err(anyhow::anyhow!("this profile does not describe the connected outputs")),
+            }
+        } else {
+            Ok(self.drafts.iter().map(Draft::setting).collect())
+        };
+        match settings {
+            Ok(settings) => {
+                if self.requests.send(Request::Apply(settings)).is_err() {
+                    self.status = "the wayland connection is gone".into();
+                }
+            }
+            Err(e) => self.status = format!("{e:#}"),
         }
     }
 
@@ -251,47 +370,57 @@ impl App {
             Ok(()) => format!("saved profile {} to {}", self.name, self.path.display()),
             Err(e) => format!("{e:#}"),
         };
+        self.reload();
     }
 
-    fn write_profile(&self) -> Result<()> {
+    fn delete(&mut self, name: &str) {
+        let mut config = self.config.clone();
+        config.remove(name);
+        self.status = match config.save(&self.path) {
+            Ok(()) => format!("deleted profile {name}"),
+            Err(e) => format!("{e:#}"),
+        };
+        self.reload();
+        if self.editing.as_deref() == Some(name) {
+            self.edit_live();
+        }
+    }
+
+    fn profile(&self) -> Profile {
+        Profile {
+            name: self.name.trim().to_string(),
+            outputs: self.drafts.iter().map(|d| d.to_output(&self.heads, self.with_serial)).collect(),
+        }
+    }
+
+    fn write_profile(&mut self) -> Result<()> {
         if self.name.trim().is_empty() {
             anyhow::bail!("the profile needs a name");
         }
-        let heads: Vec<Head> = self
-            .drafts
-            .iter()
-            .filter_map(|d| {
-                let head = self.heads.iter().find(|h| h.id == d.id)?;
-                Some(Head {
-                    id: d.id.clone(),
-                    description: head.description.clone(),
-                    modes: head.modes.clone(),
-                    enabled: d.enabled,
-                    current_mode: d.mode,
-                    position: (d.x.round() as i32, d.y.round() as i32),
-                    scale: d.scale,
-                    transform: d.transform,
-                })
-            })
-            .collect();
-        let snapshot = Snapshot { serial: 0, heads };
+        let profile = self.profile();
         let mut config = Config::load(&self.path)?;
-        config.upsert(profile_from_snapshot(self.name.trim(), &snapshot, self.with_serial));
+        // Saving an edited profile under a new name renames it.
+        if let Some(old) = &self.editing {
+            if *old != profile.name {
+                config.remove(old);
+            }
+            self.editing = Some(profile.name.clone());
+        }
+        config.upsert(profile);
         config.save(&self.path)
     }
 
     fn side_panel(&mut self, ui: &mut egui::Ui) {
         ui.heading("Outputs");
         for (i, draft) in self.drafts.iter().enumerate() {
-            let label = format!("{} — {}", draft.id.connector, draft.id.model);
-            ui.selectable_value(&mut self.selected, i, label);
+            ui.selectable_value(&mut self.selected, i, draft.name());
         }
         ui.separator();
 
         let mut changed = false;
         if let Some(draft) = self.drafts.get_mut(self.selected) {
-            let head = self.heads.iter().find(|h| h.id == draft.id);
-            ui.label(draft.id.to_string());
+            let head = draft.head(&self.heads);
+            ui.label(draft.label());
             changed |= ui.checkbox(&mut draft.enabled, "Enabled").changed();
 
             ui.horizontal(|ui| {
@@ -308,7 +437,7 @@ impl App {
                     let mut picked = false;
                     for mode in &modes {
                         let label = if mode.preferred { format!("{mode} *") } else { mode.to_string() };
-                        picked |= ui.selectable_value(&mut draft.mode, Some(*mode), label).changed();
+                        picked |= ui.selectable_value(&mut draft.mode, Some(ModeSpec::from(*mode)), label).changed();
                     }
                     picked
                 })
@@ -358,9 +487,48 @@ impl App {
         if ui.button("Save profile").clicked() {
             self.save();
         }
+
+        ui.separator();
+        ui.heading("Profiles");
+        if self.config.profiles.is_empty() {
+            ui.weak("no profiles yet");
+        }
+        let mut open = None;
+        let mut delete = None;
+        for profile in &self.config.profiles {
+            ui.horizontal(|ui| {
+                if ui.selectable_label(self.editing.as_deref() == Some(&profile.name), &profile.name).clicked() {
+                    open = Some(profile.name.clone());
+                }
+                if match_profile(profile, &self.heads).is_some() {
+                    ui.weak("✓").on_hover_text("matches the connected outputs");
+                }
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.small_button("🗑").on_hover_text("delete").clicked() {
+                        delete = Some(profile.name.clone());
+                    }
+                });
+            });
+        }
+        if let Some(name) = open {
+            self.edit(&name);
+        }
+        if let Some(name) = delete {
+            self.delete(&name);
+        }
     }
 
     fn canvas(&mut self, ui: &mut egui::Ui) {
+        if let Some(name) = self.editing.clone() {
+            ui.horizontal(|ui| {
+                ui.weak(format!("editing profile {name}"));
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.button("Back to live").clicked() {
+                        self.edit_live();
+                    }
+                });
+            });
+        }
         let area = ui.available_rect_before_wrap();
         let painter = ui.painter_at(area);
 
@@ -379,12 +547,8 @@ impl App {
 
         // Refitting the canvas mid-drag would slide the rectangle out from under
         // the pointer, so the view only follows the layout when nothing is moving.
-        let (zoom, offset) = self.view.filter(|_| ui.ctx().dragged_id().is_some() || sliding).unwrap_or_else(|| {
-            let margin = 24.0;
-            let zoom = ((area.width() - 2.0 * margin) / bounds.width().max(1.0))
-                .min((area.height() - 2.0 * margin) / bounds.height().max(1.0));
-            (zoom, area.center().to_vec2() - bounds.center().to_vec2() * zoom)
-        });
+        let (zoom, offset) =
+            self.view.filter(|_| ui.ctx().dragged_id().is_some() || sliding).unwrap_or_else(|| fit(area, bounds));
         self.view = Some((zoom, offset));
         let to_screen = |p: egui::Pos2| (p.to_vec2() * zoom + offset).to_pos2();
 
@@ -428,7 +592,7 @@ impl App {
             painter.text(
                 rect.center(),
                 egui::Align2::CENTER_CENTER,
-                format!("{}\n{}×{} @ {}", draft.id.connector, size.x as i32, size.y as i32, draft.scale),
+                format!("{}\n{}×{} @ {}", draft.short_name(), size.x as i32, size.y as i32, draft.scale),
                 egui::FontId::proportional(13.0),
                 visuals.strong_text_color(),
             );
@@ -532,6 +696,14 @@ fn guides(target: egui::Rect, others: &[egui::Rect]) -> Vec<[egui::Pos2; 2]> {
 
 fn rect_of(draft: &Draft) -> egui::Rect {
     egui::Rect::from_min_size(egui::pos2(draft.x, draft.y), draft.size())
+}
+
+/// Zoom and pan that fit `bounds` inside `area` with a margin.
+fn fit(area: egui::Rect, bounds: egui::Rect) -> (f32, egui::Vec2) {
+    let margin = 24.0;
+    let zoom = ((area.width() - 2.0 * margin) / bounds.width().max(1.0))
+        .min((area.height() - 2.0 * margin) / bounds.height().max(1.0));
+    (zoom, area.center().to_vec2() - bounds.center().to_vec2() * zoom)
 }
 
 /// Pull the enabled outputs together so the layout is gapless and free of
@@ -660,13 +832,61 @@ mod tests {
     fn draft(connector: &str, x: f32, y: f32) -> Draft {
         Draft {
             id: HeadId { connector: connector.into(), ..HeadId::default() },
+            keys: None,
             enabled: true,
             x,
             y,
             scale: 1.0,
-            mode: Some(Mode { width: 1920, height: 1080, refresh: 60_000, preferred: true }),
+            mode: Some(ModeSpec { width: 1920, height: 1080, refresh: Some(60_000) }),
             transform: Transform::Normal,
         }
+    }
+
+    #[test]
+    fn saving_from_the_live_layout_lists_the_new_profile() {
+        let dir = std::env::temp_dir().join(format!("wano-ui-test-{}", std::process::id()));
+        let path = dir.join("config.toml");
+        let head = Head {
+            id: HeadId { connector: "DP-1".into(), make: "Dell Inc.".into(), model: "DELL P2723QE".into(), serial: "X".into() },
+            description: String::new(),
+            modes: vec![],
+            enabled: true,
+            current_mode: Some(wano::wl::Mode { width: 3840, height: 2160, refresh: 59_997, preferred: true }),
+            position: (0, 0),
+            scale: 1.6,
+            transform: Transform::Normal,
+        };
+        let (tx, _rx) = channel::channel();
+        let (_utx, urx) = mpsc::channel();
+        let mut app = App::new(path.clone(), vec![head], tx, urx);
+        app.name = "desk".into();
+        app.save();
+        assert_eq!(app.status, format!("saved profile desk to {}", path.display()));
+        assert_eq!(app.config.profiles.iter().map(|p| p.name.as_str()).collect::<Vec<_>>(), ["desk"]);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn a_profile_entry_round_trips_through_a_draft() {
+        let entry = Output {
+            model: Some("PHL 241B7Q".into()),
+            serial: Some("X".into()),
+            enabled: true,
+            position: Some([1920, 0]),
+            scale: Some(1.5),
+            mode: Some("2560x1440@59.951".into()),
+            transform: Some("90".into()),
+            ..Output::default()
+        };
+        let draft = Draft::from_output(&entry);
+        assert_eq!(draft.size(), egui::vec2(960.0, 1706.0));
+        let back = draft.to_output(&[], true);
+        assert_eq!(back.model, entry.model);
+        assert_eq!(back.serial, entry.serial);
+        assert_eq!(back.position, entry.position);
+        assert_eq!(back.mode, entry.mode);
+        assert_eq!(back.transform, entry.transform);
+        assert!(draft.to_output(&[], false).serial.is_none());
     }
 
     /// Every enabled output shares an edge with another one, and none overlap.
@@ -753,7 +973,7 @@ mod tests {
     #[test]
     fn a_footprint_is_the_compositor_s_own_so_nothing_overlaps() {
         let mut drafts = vec![draft("DP-2", 0.0, 0.0), draft("eDP-1", 2500.0, 0.0)];
-        drafts[0].mode = Some(Mode { width: 3840, height: 2160, refresh: 60_000, preferred: true });
+        drafts[0].mode = Some(ModeSpec { width: 3840, height: 2160, refresh: Some(60_000) });
         drafts[0].scale = 1.6015625;
         assert_eq!(drafts[0].size(), egui::vec2(2400.0, 1350.0));
         settle(&mut drafts, 1, 16.0);

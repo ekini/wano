@@ -144,6 +144,12 @@ enable/disable, scale, mode and transform for the selected output. `Apply`
 changes the live layout, `Revert` puts back the layout from when the GUI
 started, `Save profile` writes the profile.
 
+The `Profiles` list shows every profile in the config, ticking the ones that
+fit the connected outputs. Click one to edit it in the canvas — even a profile
+for a desk you are not at — and `Save profile` writes it back (under a new
+name renames it); `Apply` works when it describes the connected outputs. `Back
+to live` returns to the outputs as they are; the bin deletes a profile.
+
 ## Migrating from kanshi + sway `output` directives
 
 wano owns position, scale, mode and transform. Sway reimposes its own `output`

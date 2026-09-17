@@ -104,6 +104,10 @@ impl Config {
             None => self.profiles.push(profile),
         }
     }
+
+    pub fn remove(&mut self, name: &str) {
+        self.profiles.retain(|p| p.name != name);
+    }
 }
 
 impl Output {
@@ -112,13 +116,7 @@ impl Output {
     /// So are outputs that report no model at all, which would otherwise produce an
     /// entry that matches nothing.
     pub fn from_head(head: &Head, with_serial: bool) -> Self {
-        let known = |s: &String| !s.is_empty() && s != UNKNOWN;
-        let by_connector = is_internal(&head.id.connector) || !known(&head.id.model);
         Self {
-            connector: by_connector.then(|| head.id.connector.clone()),
-            make: (!by_connector).then(|| head.id.make.clone()).filter(known),
-            model: (!by_connector).then(|| head.id.model.clone()).filter(known),
-            serial: (!by_connector && with_serial).then(|| head.id.serial.clone()).filter(known),
             enabled: head.enabled,
             position: Some([head.position.0, head.position.1]),
             // The compositor reports scale quantized to wl_fixed (1.6 comes back
@@ -127,6 +125,20 @@ impl Output {
             scale: Some((quantized_scale(head.scale) * 1000.0).round() / 1000.0),
             mode: head.current_mode.map(|m| ModeSpec::from(m).to_string()),
             transform: Some(transform_name(head.transform).to_string()),
+            ..Self::keys(&head.id, with_serial)
+        }
+    }
+
+    /// Only the match keys for a head; every setting left as "leave as-is".
+    pub fn keys(id: &HeadId, with_serial: bool) -> Self {
+        let known = |s: &String| !s.is_empty() && s != UNKNOWN;
+        let by_connector = is_internal(&id.connector) || !known(&id.model);
+        Self {
+            connector: by_connector.then(|| id.connector.clone()),
+            make: (!by_connector).then(|| id.make.clone()).filter(known),
+            model: (!by_connector).then(|| id.model.clone()).filter(known),
+            serial: (!by_connector && with_serial).then(|| id.serial.clone()).filter(known),
+            ..Self::default()
         }
     }
 
@@ -275,6 +287,19 @@ mod tests {
         assert_eq!(config.profiles.len(), 2);
         assert_eq!(config.profiles[0].name, "a");
         assert_eq!(config.profiles[0].outputs.len(), 1);
+    }
+
+    #[test]
+    fn remove_drops_only_the_named_profile() {
+        let mut config = Config {
+            profiles: vec![
+                Profile { name: "a".into(), outputs: vec![] },
+                Profile { name: "b".into(), outputs: vec![] },
+            ],
+        };
+        config.remove("a");
+        assert_eq!(config.profiles.len(), 1);
+        assert_eq!(config.profiles[0].name, "b");
     }
 
     #[test]
