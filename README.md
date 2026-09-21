@@ -33,15 +33,9 @@ anything newer.
 sudo apt install ./dist/wano_0.1.0-1_amd64.deb
 ```
 
-It ships both binaries, the desktop entry and a systemd user unit. The unit
-needs `WAYLAND_DISPLAY`, which sway does not hand to the user manager, so the
-sway config line is
-
-```
-exec systemctl --user import-environment WAYLAND_DISPLAY && systemctl --user start wano
-```
-
-`exec wano daemon` stays the simpler option and needs no unit at all.
+It ships both binaries and the desktop entry. The daemon needs
+`WAYLAND_DISPLAY`, so start it from the compositor (`exec wano daemon` in the
+sway config) rather than from a systemd user unit.
 
 The snap is strictly confined, and snapd points `HOME` at
 `~/snap/wano/current`, so reaching the real profiles needs one connection that
