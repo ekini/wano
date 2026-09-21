@@ -847,7 +847,12 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("wano-ui-test-{}", std::process::id()));
         let path = dir.join("config.toml");
         let head = Head {
-            id: HeadId { connector: "DP-1".into(), make: "Dell Inc.".into(), model: "DELL P2723QE".into(), serial: "X".into() },
+            id: HeadId {
+                connector: "DP-1".into(),
+                make: "Dell Inc.".into(),
+                model: "DELL P2723QE".into(),
+                serial: "X".into(),
+            },
             description: String::new(),
             modes: vec![],
             enabled: true,
