@@ -810,18 +810,18 @@ fn flush_position(drafts: &[Draft], i: usize, placed: &[usize], sticky: f32) -> 
 }
 
 impl eframe::App for App {
-    fn update(&mut self, ctx: &egui::Context, _: &mut eframe::Frame) {
+    fn ui(&mut self, ui: &mut egui::Ui, _: &mut eframe::Frame) {
         self.drain();
 
-        egui::SidePanel::right("controls").exact_width(280.0).show(ctx, |ui| {
+        egui::Panel::right("controls").exact_size(280.0).show(ui, |ui| {
             egui::ScrollArea::vertical().show(ui, |ui| self.side_panel(ui));
         });
-        egui::TopBottomPanel::bottom("status").show(ctx, |ui| {
+        egui::Panel::bottom("status").show(ui, |ui| {
             ui.horizontal(|ui| {
                 ui.label(&self.status);
             });
         });
-        egui::CentralPanel::default().show(ctx, |ui| self.canvas(ui));
+        egui::CentralPanel::default().show(ui, |ui| self.canvas(ui));
     }
 }
 
