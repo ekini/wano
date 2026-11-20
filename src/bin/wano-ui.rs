@@ -562,7 +562,7 @@ impl App {
             let draft = &self.drafts[i];
             let at = egui::pos2(draft.x, draft.y) + self.slides[i];
             let rect = egui::Rect::from_min_size(to_screen(at), draft.size() * zoom);
-            let response = ui.interact(rect, egui::Id::new(("output", i)), egui::Sense::click_and_drag());
+            let response = ui.interact(rect, ui.scope_id().with(("output", i)), egui::Sense::click_and_drag());
             if response.clicked() || response.drag_started() {
                 self.selected = i;
             }
